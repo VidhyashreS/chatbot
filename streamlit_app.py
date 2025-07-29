@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 
 import streamlit as st
 from groq import Groq
+from googletrans import Translator
 
 load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -17,6 +18,7 @@ def get_model():
 
 
 model = get_model()
+translator = Translator()
 
 SYSTEM_PROMPT = (
     "You are an expert on Andhra Pradesh tourism and cuisine. "
