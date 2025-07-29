@@ -3,29 +3,20 @@ import concurrent.futures
 from dotenv import load_dotenv
 
 import streamlit as st
-import google.generativeai as genai
-from googletrans import Translator
-from PIL import Image  # future media features
+from groq import Groq
 
 load_dotenv()
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+print("Loaded GROQ_API_KEY:", GROQ_API_KEY)
 
 
 @st.cache_resource(show_spinner=False)
 def get_model():
-    """Initialise the Gemini model once per session/container."""
-    genai.configure(api_key=GEMINI_API_KEY)
-    return genai.GenerativeModel("gemini-1.5-flash")
-
-
-@st.cache_resource(show_spinner=False)
-def get_translator():
-    """Create a single Google-trans Translator instance."""
-    return Translator()
+    """Initialise the Groq client once per session/container."""
+    return Groq(api_key=GROQ_API_KEY)
 
 
 model = get_model()
-translator = get_translator()
 
 SYSTEM_PROMPT = (
     "You are an expert on Andhra Pradesh tourism and cuisine. "
@@ -94,14 +85,24 @@ if prompt := st.chat_input("Ask something about Andhra Pradesh Tourism..."):
 
 
 def fetch_response(user_prompt: str) -> str:
-    """Call Gemini with timeout and return plain text (or error)."""
+    """Call Groq with timeout and return plain text (or error)."""
     try:
         with concurrent.futures.ThreadPoolExecutor() as pool:
-            future = pool.submit(model.generate_content, user_prompt)
+            future = pool.submit(
+                lambda: model.chat.completions.create(
+                    model="meta-llama/llama-4-scout-17b-16e-instruct",
+                    messages=[{"role": "user", "content": user_prompt}],
+                    temperature=1,
+                    max_completion_tokens=1024,
+                    top_p=1,
+                    stream=False,
+                    stop=None,
+                )
+            )
             result = future.result(timeout=20)
-        return result.text.strip()
+        return result.choices[0].message.content.strip()
     except Exception as exc:
-        return f"⚠️ Gemini API Error: {exc}"
+        return f"⚠️ Groq API Error: {exc}"
 
 
 if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
