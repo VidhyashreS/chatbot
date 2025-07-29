@@ -1,4 +1,4 @@
 streamlit
-groq
+groq>=0.7.0
 python-dotenv
 googletrans==4.0.0rc1
