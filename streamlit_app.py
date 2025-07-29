@@ -1,56 +1,136 @@
-import streamlit as st
-from openai import OpenAI
+import os
+import concurrent.futures
+from dotenv import load_dotenv
 
-# Show title and description.
-st.title("💬 Chatbot")
-st.write(
-    "This is a simple chatbot that uses OpenAI's GPT-3.5 model to generate responses. "
-    "To use this app, you need to provide an OpenAI API key, which you can get [here](https://platform.openai.com/account/api-keys). "
-    "You can also learn how to build this app step by step by [following our tutorial](https://docs.streamlit.io/develop/tutorials/llms/build-conversational-apps)."
+import streamlit as st
+import google.generativeai as genai
+from googletrans import Translator
+from PIL import Image  # future media features
+
+load_dotenv()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+
+@st.cache_resource(show_spinner=False)
+def get_model():
+    """Initialise the Gemini model once per session/container."""
+    genai.configure(api_key=GEMINI_API_KEY)
+    return genai.GenerativeModel("gemini-1.5-flash")
+
+
+@st.cache_resource(show_spinner=False)
+def get_translator():
+    """Create a single Google-trans Translator instance."""
+    return Translator()
+
+
+model = get_model()
+translator = get_translator()
+
+SYSTEM_PROMPT = (
+    "You are an expert on Andhra Pradesh tourism and cuisine. "
+    "Whenever asked about food, provide detailed information about famous dishes, "
+    "street food, regional specialties, and culinary traditions from all parts "
+    "of Andhra Pradesh."
 )
 
-# Ask user for their OpenAI API key via `st.text_input`.
-# Alternatively, you can store the API key in `./.streamlit/secrets.toml` and access it
-# via `st.secrets`, see https://docs.streamlit.io/develop/concepts/connections/secrets-management
-openai_api_key = st.text_input("OpenAI API Key", type="password")
-if not openai_api_key:
-    st.info("Please add your OpenAI API key to continue.", icon="🗝️")
-else:
+LANG_MAP = {"English": "en", "Hindi": "hi", "Telugu": "te"}
 
-    # Create an OpenAI client.
-    client = OpenAI(api_key=openai_api_key)
+st.set_page_config(page_title="Saanchari – AP Tourism Chatbot", layout="wide")
 
-    # Create a session state variable to store the chat messages. This ensures that the
-    # messages persist across reruns.
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
+# Inject CSS for compact language selector
+st.markdown(
+    """
+    <style>
+        .lang-select {
+            position:absolute; top:18px; left:24px;
+            background:#fff; border-radius:6px;
+            box-shadow:0 1px 3px rgba(0,0,0,0.08);
+            padding:0.05rem 0.35rem; font-size:0.85rem; z-index:1000;
+        }
+        .lang-select label {display:none;}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-    # Display the existing chat messages via `st.chat_message`.
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+# Language picker (non-empty label prevents Streamlit warning)
+st.markdown("<div class='lang-select'>", unsafe_allow_html=True)
+selected_lang = st.selectbox(
+    label="Language",                 # must be non-empty
+    options=list(LANG_MAP.keys()),
+    index=0,
+    label_visibility="collapsed",
+)
+st.markdown("</div>", unsafe_allow_html=True)
 
-    # Create a chat input field to allow the user to enter a message. This will display
-    # automatically at the bottom of the page.
-    if prompt := st.chat_input("What is up?"):
+# Header
+st.markdown(
+    "<h1 style='color:#07546B; margin-top:0;'>Saanchari – Andhra Pradesh Tourism Chatbot</h1>",
+    unsafe_allow_html=True,
+)
 
-        # Store and display the current prompt.
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-        # Generate a response using the OpenAI API.
-        stream = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": m["role"], "content": m["content"]}
-                for m in st.session_state.messages
-            ],
-            stream=True,
-        )
+BUILTIN_QUESTIONS = [
+    "What are the top tourist attractions in Andhra Pradesh?",
+    "Tell me about the famous food in Andhra Pradesh.",
+    "What is the best time to visit Andhra Pradesh?",
+]
 
-        # Stream the response to the chat using `st.write_stream`, then store it in 
-        # session state.
-        with st.chat_message("assistant"):
-            response = st.write_stream(stream)
-        st.session_state.messages.append({"role": "assistant", "content": response})
+col1, col2, col3 = st.columns(3)
+for col, text in zip((col1, col2, col3), BUILTIN_QUESTIONS):
+    if col.button(text, use_container_width=True):
+        st.session_state.messages.append({"role": "user", "content": text})
+
+
+for m in st.session_state.messages:
+    with st.chat_message(m["role"]):
+        st.markdown(m["content"])
+
+if prompt := st.chat_input("Ask something about Andhra Pradesh Tourism..."):
+    st.session_state.messages.append({"role": "user", "content": prompt})
+
+
+def fetch_response(user_prompt: str) -> str:
+    """Call Gemini with timeout and return plain text (or error)."""
+    try:
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            future = pool.submit(model.generate_content, user_prompt)
+            result = future.result(timeout=20)
+        return result.text.strip()
+    except Exception as exc:
+        return f"⚠️ Gemini API Error: {exc}"
+
+
+if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
+    user_msg = st.session_state.messages[-1]["content"]
+    full_prompt = f"{SYSTEM_PROMPT}\n\n{user_msg}"
+
+    with st.chat_message("assistant"):
+        with st.spinner("Thinking..."):
+            reply = fetch_response(full_prompt)
+
+            # Translate if needed
+            target_lang = LANG_MAP[selected_lang]
+            if target_lang != "en":
+                try:
+                    reply = translator.translate(reply, dest=target_lang).text
+                except Exception as exc:
+                    reply = f"⚠️ Translation Error: {exc}"
+
+            st.markdown(reply)
+            st.session_state.messages.append({"role": "assistant", "content": reply})
+
+
+st.markdown(
+    """
+    <div style='position:fixed; bottom:0; left:0; right:0; background:#FFF;
+                border-top:1px solid #CFD1D1; padding:0.5rem; text-align:center;'>
+        <small style='color:#07546B;'>© 2025 Kshipani Tech Ventures Pvt Ltd. All rights reserved.</small>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
